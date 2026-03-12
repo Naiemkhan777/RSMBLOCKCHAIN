@@ -1,0 +1,497 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+/**
+ * ╔══════════════════════════════════════════════════════════╗
+ * ║          RSM Chain — BEP-20 Smart Contract              ║
+ * ║          Royal Smart Money (RSM)                        ║
+ * ║          Binance Smart Chain (BSC)                      ║
+ * ║          Deploy on: https://remix.ethereum.org          ║
+ * ╚══════════════════════════════════════════════════════════╝
+ *
+ * Features:
+ *   ✅ BEP-20 / ERC-20 Standard
+ *   ✅ Mint (owner only)
+ *   ✅ Burn (any holder)
+ *   ✅ Ownership Transfer
+ *   ✅ Pause / Unpause (emergency)
+ *   ✅ Max Supply Cap (1 Trillion)
+ *   ✅ Anti-overflow using SafeMath patterns (Solidity 0.8+)
+ *
+ * How to Deploy (Free on BSC Testnet):
+ *   1. Go to remix.ethereum.org
+ *   2. Paste this file → Compile with 0.8.20
+ *   3. Connect MetaMask → BSC Testnet
+ *   4. Deploy RSMChain() constructor
+ *   5. For Mainnet: change network to BSC Mainnet (~$10 BNB gas)
+ */
+
+// ─── CONTEXT ────────────────────────────────────────────────
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) { return msg.sender; }
+    function _msgData() internal view virtual returns (bytes calldata) { return msg.data; }
+}
+
+// ─── OWNABLE ────────────────────────────────────────────────
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor(address initialOwner) {
+        require(initialOwner != address(0), "Ownable: zero address");
+        _transferOwnership(initialOwner);
+    }
+
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function owner() public view virtual returns (address) { return _owner; }
+
+    /**
+     * @dev Transfer ownership to a new address.
+     * @param newOwner The address of the new owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Renounce ownership permanently (use with caution!).
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+// ─── PAUSABLE ────────────────────────────────────────────────
+abstract contract Pausable is Context {
+    bool private _paused;
+
+    event Paused(address account);
+    event Unpaused(address account);
+
+    constructor() { _paused = false; }
+
+    modifier whenNotPaused() { require(!paused(), "Pausable: paused"); _; }
+    modifier whenPaused()    { require(paused(),  "Pausable: not paused"); _; }
+
+    function paused() public view virtual returns (bool) { return _paused; }
+
+    function _pause() internal virtual whenNotPaused {
+        _paused = true;
+        emit Paused(_msgSender());
+    }
+    function _unpause() internal virtual whenPaused {
+        _paused = false;
+        emit Unpaused(_msgSender());
+    }
+}
+
+// ─── IERC20 ──────────────────────────────────────────────────
+interface IERC20 {
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address to, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
+// ─── IERC20 METADATA ─────────────────────────────────────────
+interface IERC20Metadata is IERC20 {
+    function name()     external view returns (string memory);
+    function symbol()   external view returns (string memory);
+    function decimals() external view returns (uint8);
+}
+
+// ─── ERC20 BASE ──────────────────────────────────────────────
+contract ERC20 is Context, IERC20, IERC20Metadata {
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    uint256 private _totalSupply;
+    string private _name;
+    string private _symbol;
+
+    constructor(string memory name_, string memory symbol_) {
+        _name   = name_;
+        _symbol = symbol_;
+    }
+
+    function name()        public view virtual override returns (string memory) { return _name; }
+    function symbol()      public view virtual override returns (string memory) { return _symbol; }
+    function decimals()    public view virtual override returns (uint8)         { return 18; }
+    function totalSupply() public view virtual override returns (uint256)       { return _totalSupply; }
+
+    function balanceOf(address account) public view virtual override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address to, uint256 amount) public virtual override returns (bool) {
+        _transfer(_msgSender(), to, amount);
+        return true;
+    }
+
+    function allowance(address owner_, address spender) public view virtual override returns (uint256) {
+        return _allowances[owner_][spender];
+    }
+
+    function approve(address spender, uint256 amount) public virtual override returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) public virtual override returns (bool) {
+        address spender = _msgSender();
+        _spendAllowance(from, spender, amount);
+        _transfer(from, to, amount);
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+        _approve(_msgSender(), spender, allowance(_msgSender(), spender) + addedValue);
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+        uint256 currentAllowance = allowance(_msgSender(), spender);
+        require(currentAllowance >= subtractedValue, "ERC20: decreased allowance below zero");
+        unchecked { _approve(_msgSender(), spender, currentAllowance - subtractedValue); }
+        return true;
+    }
+
+    function _transfer(address from, address to, uint256 amount) internal virtual {
+        require(from != address(0), "ERC20: transfer from the zero address");
+        require(to   != address(0), "ERC20: transfer to the zero address");
+        _beforeTokenTransfer(from, to, amount);
+        uint256 fromBalance = _balances[from];
+        require(fromBalance >= amount, "ERC20: transfer amount exceeds balance");
+        unchecked { _balances[from] = fromBalance - amount; _balances[to] += amount; }
+        emit Transfer(from, to, amount);
+        _afterTokenTransfer(from, to, amount);
+    }
+
+    function _mint(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: mint to the zero address");
+        _beforeTokenTransfer(address(0), account, amount);
+        _totalSupply += amount;
+        unchecked { _balances[account] += amount; }
+        emit Transfer(address(0), account, amount);
+        _afterTokenTransfer(address(0), account, amount);
+    }
+
+    function _burn(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: burn from the zero address");
+        _beforeTokenTransfer(account, address(0), amount);
+        uint256 accountBalance = _balances[account];
+        require(accountBalance >= amount, "ERC20: burn amount exceeds balance");
+        unchecked { _balances[account] = accountBalance - amount; _totalSupply -= amount; }
+        emit Transfer(account, address(0), amount);
+        _afterTokenTransfer(account, address(0), amount);
+    }
+
+    function _approve(address owner_, address spender, uint256 amount) internal virtual {
+        require(owner_  != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+        _allowances[owner_][spender] = amount;
+        emit Approval(owner_, spender, amount);
+    }
+
+    function _spendAllowance(address owner_, address spender, uint256 amount) internal virtual {
+        uint256 currentAllowance = allowance(owner_, spender);
+        if (currentAllowance != type(uint256).max) {
+            require(currentAllowance >= amount, "ERC20: insufficient allowance");
+            unchecked { _approve(owner_, spender, currentAllowance - amount); }
+        }
+    }
+
+    function _beforeTokenTransfer(address from, address to, uint256 amount) internal virtual {}
+    function _afterTokenTransfer(address from, address to, uint256 amount)  internal virtual {}
+}
+
+// ═════════════════════════════════════════════════════════════
+//                   RSM CHAIN — MAIN CONTRACT
+// ═════════════════════════════════════════════════════════════
+contract RSMChain is ERC20, Ownable, Pausable {
+
+    // ── Constants ──────────────────────────────────────────
+    uint256 public constant MAX_SUPPLY = 1_000_000_000_000 * 10**18; // 1 Trillion RSM
+    uint256 public constant INITIAL_SUPPLY = 100_000_000 * 10**18;   // 100 Million RSM
+
+    // ── Events ─────────────────────────────────────────────
+    event TokensMinted(address indexed to,   uint256 amount, string reason);
+    event TokensBurned(address indexed from, uint256 amount, string reason);
+    event ContractPaused(address indexed by);
+    event ContractUnpaused(address indexed by);
+
+    // ── Constructor ────────────────────────────────────────
+    /**
+     * @dev Deploy RSMChain token.
+     *      Mints initial supply to the deployer wallet.
+     *      Name: RSM Chain | Symbol: RSM | Decimals: 18
+     */
+    constructor() ERC20("RSM Chain", "RSM") Ownable(msg.sender) {
+        _mint(msg.sender, INITIAL_SUPPLY);
+        emit TokensMinted(msg.sender, INITIAL_SUPPLY, "Initial Supply");
+    }
+
+    // ── Mint ───────────────────────────────────────────────
+    /**
+     * @dev Mint new RSM tokens. Only owner can call.
+     * @param to      Recipient address
+     * @param amount  Amount in wei (1 RSM = 1e18)
+     * @param reason  Reason for minting (logged in event)
+     *
+     * Example: mint(0xABC..., 1000000000000000000000, "Platform Reward")
+     *          → Mints 1000 RSM to 0xABC...
+     */
+    function mint(address to, uint256 amount, string calldata reason)
+        external
+        onlyOwner
+        whenNotPaused
+    {
+        require(to != address(0), "RSMChain: mint to zero address");
+        require(amount > 0,       "RSMChain: amount must be > 0");
+        require(totalSupply() + amount <= MAX_SUPPLY, "RSMChain: max supply exceeded");
+
+        _mint(to, amount);
+        emit TokensMinted(to, amount, reason);
+    }
+
+    // ── Burn (self) ────────────────────────────────────────
+    /**
+     * @dev Burn tokens from your own wallet.
+     * @param amount Amount in wei to burn
+     * @param reason Reason for burning
+     */
+    function burn(uint256 amount, string calldata reason)
+        external
+        whenNotPaused
+    {
+        require(amount > 0, "RSMChain: amount must be > 0");
+        _burn(_msgSender(), amount);
+        emit TokensBurned(_msgSender(), amount, reason);
+    }
+
+    // ── Burn (from allowance) ──────────────────────────────
+    /**
+     * @dev Burn tokens from another wallet (requires allowance).
+     * @param from   Wallet to burn from
+     * @param amount Amount in wei to burn
+     * @param reason Reason for burning
+     */
+    function burnFrom(address from, uint256 amount, string calldata reason)
+        external
+        whenNotPaused
+    {
+        require(amount > 0, "RSMChain: amount must be > 0");
+        _spendAllowance(from, _msgSender(), amount);
+        _burn(from, amount);
+        emit TokensBurned(from, amount, reason);
+    }
+
+    // ── Admin Burn (owner only) ────────────────────────────
+    /**
+     * @dev Owner can burn tokens from any address (admin power).
+     *      Use only for fraud/abuse cases.
+     */
+    function adminBurn(address from, uint256 amount, string calldata reason)
+        external
+        onlyOwner
+    {
+        require(from != address(0), "RSMChain: burn from zero address");
+        require(amount > 0,         "RSMChain: amount must be > 0");
+        _burn(from, amount);
+        emit TokensBurned(from, amount, string(abi.encodePacked("[ADMIN] ", reason)));
+    }
+
+    // ── Pause ──────────────────────────────────────────────
+    /**
+     * @dev Pause all token transfers (emergency use).
+     */
+    function pause() external onlyOwner {
+        _pause();
+        emit ContractPaused(_msgSender());
+    }
+
+    /**
+     * @dev Unpause token transfers.
+     */
+    function unpause() external onlyOwner {
+        _unpause();
+        emit ContractUnpaused(_msgSender());
+    }
+
+    // ── Ownership Transfer ────────────────────────────────
+    // Inherited from Ownable:
+    //   transferOwnership(address newOwner)  — transfer to new wallet
+    //   renounceOwnership()                  — give up ownership permanently
+
+    // ── Override: block transfers when paused ─────────────
+    function _beforeTokenTransfer(address from, address to, uint256 amount)
+        internal
+        override
+        whenNotPaused
+    {
+        super._beforeTokenTransfer(from, to, amount);
+    }
+
+    // ── View helpers ──────────────────────────────────────
+    /**
+     * @dev Returns how many more RSM can still be minted.
+     */
+    function remainingMintable() external view returns (uint256) {
+        return MAX_SUPPLY - totalSupply();
+    }
+
+    /**
+     * @dev Returns human-readable balance (divided by 1e18).
+     * Note: returns floor value (ignores decimals beyond 18).
+     */
+    function balanceOfFormatted(address account) external view returns (uint256) {
+        return balanceOf(account) / 10**18;
+    }
+}
+
+/*
+══════════════════════════════════════════════════════════════
+  FIREBASE SECURITY RULES — Paste into Firebase Console
+  (Database → Rules)
+══════════════════════════════════════════════════════════════
+
+{
+  "rules": {
+    // ─── Users ──────────────────────────────────────────
+    "users": {
+      "$uid": {
+        // Anyone can read (for referral lookups by code)
+        ".read": "auth != null",
+        // Only the user can write their own data
+        ".write": "auth != null && auth.uid === $uid",
+        // Balance can only be incremented positively by server logic
+        // (use Firebase Admin SDK / Cloud Functions for secure transfers)
+        "balance": {
+          ".validate": "newData.isNumber() && newData.val() >= 0"
+        },
+        "banned": {
+          // Only admin can set banned flag
+          ".write": "auth != null && auth.token.email === 'rsm.admin@gmail.com'"
+        }
+      }
+    },
+
+    // ─── Tokens ─────────────────────────────────────────
+    "tokens": {
+      ".read": "auth != null",
+      "$tid": {
+        // Authenticated users can create tokens
+        ".write": "auth != null && (
+          !data.exists() ||
+          data.child('ownerUid').val() === auth.uid ||
+          auth.token.email === 'rsm.admin@gmail.com'
+        )",
+        ".validate": "newData.hasChildren(['name','symbol','supply','ownerUid','createdAt'])",
+        "name":     { ".validate": "newData.isString() && newData.val().length >= 2 && newData.val().length <= 50" },
+        "symbol":   { ".validate": "newData.isString() && newData.val().length >= 2 && newData.val().length <= 8" },
+        "supply":   { ".validate": "newData.isString()" },
+        "ownerUid": { ".validate": "newData.val() === auth.uid || auth.token.email === 'rsm.admin@gmail.com'" }
+      }
+    },
+
+    // ─── Transactions ────────────────────────────────────
+    "transactions": {
+      ".read": "auth != null",
+      "$txid": {
+        // Any authenticated user can create a tx record
+        ".write": "auth != null && !data.exists()",
+        ".validate": "newData.hasChildren(['uid','type','amount','createdAt'])",
+        "amount": { ".validate": "newData.isNumber() && newData.val() > 0" },
+        "type":   { ".validate": "newData.isString()" }
+      }
+    },
+
+    // ─── Deposits ────────────────────────────────────────
+    "deposits": {
+      ".read": "auth != null",
+      "$did": {
+        ".write": "auth != null && (
+          !data.exists() ||
+          auth.token.email === 'rsm.admin@gmail.com'
+        )",
+        ".validate": "newData.hasChildren(['uid','email','method','amount','txId','status','createdAt'])",
+        "status": { ".validate": "newData.val() === 'pending' || auth.token.email === 'rsm.admin@gmail.com'" }
+      }
+    },
+
+    // ─── Withdraws ───────────────────────────────────────
+    "withdraws": {
+      ".read": "auth != null",
+      "$wid": {
+        ".write": "auth != null && (
+          !data.exists() ||
+          auth.token.email === 'rsm.admin@gmail.com'
+        )",
+        ".validate": "newData.hasChildren(['uid','email','method','number','amount','status','createdAt'])",
+        "status": { ".validate": "newData.val() === 'pending' || auth.token.email === 'rsm.admin@gmail.com'" }
+      }
+    },
+
+    // ─── Notices ─────────────────────────────────────────
+    "notices": {
+      ".read": "auth != null",
+      "$nid": {
+        // Only admin can post notices
+        ".write": "auth != null && auth.token.email === 'rsm.admin@gmail.com'",
+        ".validate": "newData.hasChildren(['title','body','createdAt'])"
+      }
+    },
+
+    // ─── Settings (payment numbers) ──────────────────────
+    "settings": {
+      ".read": "auth != null",
+      // Only admin can change payment settings
+      ".write": "auth != null && auth.token.email === 'rsm.admin@gmail.com'"
+    },
+
+    // ─── Everything else: deny ───────────────────────────
+    "$other": { ".read": false, ".write": false }
+  }
+}
+
+══════════════════════════════════════════════════════════════
+  HOW TO DEPLOY ON BSC MAINNET:
+  ═══════════════════════════
+  1. Install MetaMask: metamask.io
+  2. Add BSC Mainnet to MetaMask:
+     - Network: BNB Smart Chain
+     - RPC: https://bsc-dataseed.binance.org/
+     - Chain ID: 56
+     - Symbol: BNB
+  3. Buy ~$15 worth of BNB for gas
+  4. Open remix.ethereum.org
+  5. Create new file → paste this contract
+  6. Compile: Solidity 0.8.20, EVM: Paris
+  7. Deploy: Environment → Injected Provider (MetaMask)
+  8. Confirm transaction → Contract deployed!
+  9. Verify on BscScan:
+     bscscan.com → Verify & Publish → Paste source code
+
+  TESTNET (Free):
+  - Get free BNB: testnet.bnbchain.org/faucet-smart
+  - BSC Testnet RPC: https://data-seed-prebsc-1-s1.binance.org:8545/
+  - Chain ID: 97
+══════════════════════════════════════════════════════════════
+*/
